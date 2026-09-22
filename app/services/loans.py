@@ -3,10 +3,14 @@ from datetime import datetime, timedelta
 from math import ceil
 from typing import Dict, List, Optional
 
+from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Loan, MemberTier
 from app.schemas import LoanCreate, LoanOut, LoanStatus
+from app.services.books import get_book
+from app.services.members import ensure_can_access_restricted, get_member
 
 # Maximum concurrent unreturned loans per tier (None = unlimited).
 TIER_LOAN_LIMIT: Dict[str, Optional[int]] = {
@@ -65,7 +69,46 @@ def create_loan(db: Session, data: LoanCreate, now: datetime) -> LoanOut:
     On success: borrowed_at = now, due_at = now + 14 days, returned_at None,
     late_fee_cents 0, and stock is decremented by one.
     """
-    raise NotImplementedError("create_loan")
+    member = get_member(db, data.member_id)
+    book = get_book(db, data.book_id)
+
+    if book.restricted:
+        ensure_can_access_restricted(member)
+
+    # One query answers the next three checks: overdue, duplicate and tier limit.
+    unreturned = db.scalars(
+        select(Loan).where(Loan.member_id == member.id, Loan.returned_at.is_(None))
+    ).all()
+
+    if any(now > loan.due_at for loan in unreturned):
+        raise HTTPException(
+            status_code=409, detail="Return your overdue loans before borrowing again"
+        )
+    if any(loan.book_id == book.id for loan in unreturned):
+        raise HTTPException(status_code=409, detail=f"'{book.title}' is already on loan to you")
+
+    limit = TIER_LOAN_LIMIT[member.tier]
+    if limit is not None and len(unreturned) >= limit:
+        raise HTTPException(
+            status_code=409, detail=f"Tier '{member.tier}' may hold {limit} loans at a time"
+        )
+
+    if book.stock == 0:
+        raise HTTPException(status_code=409, detail=f"'{book.title}' is out of stock")
+
+    book.stock -= 1
+    loan = Loan(
+        member_id=member.id,
+        book_id=book.id,
+        borrowed_at=now,
+        due_at=now + LOAN_PERIOD,
+        returned_at=None,
+        late_fee_cents=0,
+    )
+    db.add(loan)
+    db.commit()
+    db.refresh(loan)
+    return to_loan_out(loan, now)
 
 
 def get_loan(db: Session, loan_id: int, now: datetime) -> LoanOut:
