@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Member, MemberTier, Order
 from app.schemas import MemberCreate, MemberStats
+from app.services.common import commit_or_conflict
 
 # Tiers from lowest to highest; a member's rank is their index in this list.
 TIER_ORDER: List[str] = [
@@ -39,10 +40,10 @@ def create_member(db: Session, data: MemberCreate, now: datetime) -> Member:
 
     Rules: email (already stripped + lowercased) must be unique -> 409; created_at = now.
     """
-    # TODO: reject an email that is already in use with 409
     member = Member(name=data.name, email=data.email, tier=data.tier.value, created_at=now)
     db.add(member)
-    db.commit()
+    # members.email is the only unique constraint this insert can violate.
+    commit_or_conflict(db, "A member with this email already exists")
     db.refresh(member)
     return member
 

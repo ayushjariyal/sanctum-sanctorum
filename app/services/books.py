@@ -3,11 +3,11 @@ from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Book
 from app.schemas import BookCreate, BookPage, BookSort, BookUpdate
+from app.services.common import commit_or_conflict
 
 # Column ordering for each accepted ``sort`` value; ties are always broken by id.
 SORT_ORDERS = {
@@ -25,12 +25,8 @@ def create_book(db: Session, data: BookCreate) -> Book:
     """
     book = Book(**data.model_dump())
     db.add(book)
-    try:
-        db.commit()
-    except IntegrityError:
-        # The unique index on books.isbn is the only constraint that can fire here.
-        db.rollback()
-        raise HTTPException(status_code=409, detail="A book with this ISBN already exists") from None
+    # books.isbn is the only unique constraint this insert can violate.
+    commit_or_conflict(db, "A book with this ISBN already exists")
     db.refresh(book)
     return book
 
