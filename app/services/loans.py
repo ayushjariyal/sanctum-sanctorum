@@ -90,7 +90,7 @@ def create_loan(db: Session, data: LoanCreate, now: datetime) -> LoanOut:
     limit = TIER_LOAN_LIMIT[member.tier]
     if limit is not None and len(unreturned) >= limit:
         raise HTTPException(
-            status_code=409, detail=f"Tier '{member.tier}' may hold {limit} loans at a time"
+            status_code=409, detail=f"Loan limit for tier '{member.tier}' is {limit}"
         )
 
     if book.stock == 0:

@@ -55,7 +55,10 @@ def create_order(db: Session, data: OrderCreate, now: datetime) -> Order:
         if book.stock < item.quantity:
             raise HTTPException(
                 status_code=409,
-                detail=f"Only {book.stock} copies of '{book.title}' are available",
+                detail=(
+                    f"Insufficient stock for '{book.title}': "
+                    f"{item.quantity} requested, {book.stock} available"
+                ),
             )
 
     order_items = []
