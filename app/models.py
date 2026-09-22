@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -95,10 +95,12 @@ class Loan(Base):
     member_id: Mapped[int] = mapped_column(ForeignKey("members.id"), index=True)
     book_id: Mapped[int] = mapped_column(ForeignKey("books.id"), index=True)
     borrowed_at: Mapped[datetime] = mapped_column(DateTime)
-    # TODO: the loan model is incomplete. Still missing (see SPEC.md, "Loans"):
-    #   - due_at: when the book must be back (borrowed_at + 14 days)
-    #   - returned_at: nullable, set when the book is returned
-    #   - late_fee_cents: charged on return, defaults to 0
+    # Stored rather than derived from borrowed_at: changing the loan period later
+    # must not silently move the due date of loans already out.
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    # Null until the book comes back; this is what makes a loan "unreturned".
+    returned_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    late_fee_cents: Mapped[int] = mapped_column(Integer, default=0)
 
     member: Mapped[Member] = relationship(back_populates="loans")
     book: Mapped[Book] = relationship()
