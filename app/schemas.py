@@ -28,7 +28,10 @@ def normalize_isbn13(raw: str) -> str:
     isbn = raw.replace("-", "").replace(" ", "")
     if len(isbn) != 13 or not isbn.isdigit():
         raise ValueError("isbn must contain exactly 13 digits")
-    # TODO: verify the ISBN-13 check digit (see SPEC.md)
+    body, check_digit = isbn[:12], int(isbn[12])
+    weighted = sum(int(digit) * (1 if i % 2 == 0 else 3) for i, digit in enumerate(body))
+    if (10 - weighted % 10) % 10 != check_digit:
+        raise ValueError("isbn check digit is invalid")
     return isbn
 
 
