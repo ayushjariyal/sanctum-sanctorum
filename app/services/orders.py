@@ -112,6 +112,10 @@ def cancel_order(db: Session, order_id: int) -> Order:
     order = get_order(db, order_id)
     if order.status != OrderStatus.PENDING.value:
         raise HTTPException(status_code=409, detail=f"Cannot cancel an order that is {order.status}")
+    # Releasing the reservation made in create_order; the status guard above means
+    # an already-cancelled order cannot return the same copies twice.
+    for item in order.items:
+        item.book.stock += item.quantity
     order.status = OrderStatus.CANCELLED.value
     db.commit()
     db.refresh(order)
