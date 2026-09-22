@@ -111,9 +111,17 @@ def create_loan(db: Session, data: LoanCreate, now: datetime) -> LoanOut:
     return to_loan_out(loan, now)
 
 
+def _load_loan(db: Session, loan_id: int) -> Loan:
+    """Fetch the ORM row so callers can mutate it, or raise 404."""
+    loan = db.get(Loan, loan_id)
+    if loan is None:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    return loan
+
+
 def get_loan(db: Session, loan_id: int, now: datetime) -> LoanOut:
     """Return a loan by id, or raise 404."""
-    raise NotImplementedError("get_loan")
+    return to_loan_out(_load_loan(db, loan_id), now)
 
 
 def return_loan(db: Session, loan_id: int, now: datetime) -> LoanOut:
@@ -122,11 +130,28 @@ def return_loan(db: Session, loan_id: int, now: datetime) -> LoanOut:
     Rules: 404 if missing; 409 if already returned. Sets returned_at = now, restores one copy
     of stock and charges a late fee (see ``calculate_late_fee``).
     """
-    raise NotImplementedError("return_loan")
+    loan = _load_loan(db, loan_id)
+    if loan.returned_at is not None:
+        raise HTTPException(status_code=409, detail="This loan has already been returned")
+
+    loan.returned_at = now
+    # Priced at return time, as the spec requires - not at the time of borrowing.
+    loan.late_fee_cents = calculate_late_fee(loan.due_at, now, loan.book.price_cents)
+    loan.book.stock += 1
+    db.commit()
+    db.refresh(loan)
+    return to_loan_out(loan, now)
 
 
 def list_member_loans(
     db: Session, member_id: int, now: datetime, status: Optional[LoanStatus] = None
 ) -> List[LoanOut]:
     """A member's loans ordered by id, optionally filtered by computed status; 404 if member missing."""
-    raise NotImplementedError("list_member_loans")
+    get_member(db, member_id)
+    loans = db.scalars(select(Loan).where(Loan.member_id == member_id).order_by(Loan.id)).all()
+    # Status is derived, not stored, so the filter runs after serialization.
+    return [
+        loan_out
+        for loan_out in (to_loan_out(loan, now) for loan in loans)
+        if status is None or loan_out.status == status
+    ]
