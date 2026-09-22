@@ -5,8 +5,10 @@ from typing import Dict
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models import Member, MemberTier, Order, OrderStatus
+from app.models import Member, MemberTier, Order, OrderItem, OrderStatus
 from app.schemas import OrderCreate
+from app.services.books import get_book
+from app.services.members import ensure_can_access_restricted, get_member
 
 # Percentage discount granted by each membership tier.
 TIER_DISCOUNT_PERCENT: Dict[str, int] = {
@@ -23,7 +25,10 @@ BULK_DISCOUNT_PERCENT = 5
 
 def calculate_discount_percent(member: Member, total_quantity: int) -> int:
     """Tier discount, plus the bulk discount when total quantity >= threshold."""
-    raise NotImplementedError("calculate_discount_percent")
+    percent = TIER_DISCOUNT_PERCENT[member.tier]
+    if total_quantity >= BULK_QUANTITY_THRESHOLD:
+        percent += BULK_DISCOUNT_PERCENT
+    return percent
 
 
 def create_order(db: Session, data: OrderCreate, now: datetime) -> Order:
@@ -36,14 +41,51 @@ def create_order(db: Session, data: OrderCreate, now: datetime) -> Order:
     Then stock is decremented for every item and prices are snapshotted.
     Pricing: discount_cents = subtotal * percent // 100; total = subtotal - discount.
     """
-    # TODO:
-    # 1. Load the member (404) and every book (404).
-    # 2. If any book is restricted, check the member's tier (403).
-    # 3. Check stock for every item before changing anything (409).
-    # 4. Decrement stock and build OrderItems with the current price as unit_price_cents.
-    # 5. Compute subtotal, discount_percent (calculate_discount_percent), discount_cents, total.
-    # 6. Save the pending Order with created_at = now and return it.
-    raise NotImplementedError("create_order")
+    member = get_member(db, data.member_id)
+    # Every book is resolved up front so a missing one 404s before any 403 or 409.
+    books = {item.book_id: get_book(db, item.book_id) for item in data.items}
+
+    if any(book.restricted for book in books.values()):
+        ensure_can_access_restricted(member)
+
+    # The whole basket is checked before a single copy is reserved: on failure
+    # nothing has been mutated, so there is no partial state to undo.
+    for item in data.items:
+        book = books[item.book_id]
+        if book.stock < item.quantity:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Only {book.stock} copies of '{book.title}' are available",
+            )
+
+    order_items = []
+    for item in data.items:
+        book = books[item.book_id]
+        book.stock -= item.quantity
+        order_items.append(
+            OrderItem(book_id=book.id, quantity=item.quantity, unit_price_cents=book.price_cents)
+        )
+
+    subtotal_cents = sum(line.line_total_cents for line in order_items)
+    total_quantity = sum(item.quantity for item in data.items)
+    discount_percent = calculate_discount_percent(member, total_quantity)
+    discount_cents = subtotal_cents * discount_percent // 100
+
+    order = Order(
+        member_id=member.id,
+        status=OrderStatus.PENDING.value,
+        items=order_items,
+        subtotal_cents=subtotal_cents,
+        discount_percent=discount_percent,
+        discount_cents=discount_cents,
+        total_cents=subtotal_cents - discount_cents,
+        created_at=now,
+    )
+    db.add(order)
+    # Stock decrements and the order itself land in one transaction.
+    db.commit()
+    db.refresh(order)
+    return order
 
 
 def get_order(db: Session, order_id: int) -> Order:
