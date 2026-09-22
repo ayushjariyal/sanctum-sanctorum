@@ -2,12 +2,20 @@
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Book
 from app.schemas import BookCreate, BookPage, BookSort, BookUpdate
+
+# Column ordering for each accepted ``sort`` value; ties are always broken by id.
+SORT_ORDERS = {
+    "title": Book.title.asc(),
+    "-title": Book.title.desc(),
+    "price": Book.price_cents.asc(),
+    "-price": Book.price_cents.desc(),
+}
 
 
 def create_book(db: Session, data: BookCreate) -> Book:
@@ -64,15 +72,24 @@ def list_books(
       default order is id ascending.
     - ``total`` counts all matches before ``limit``/``offset`` are applied.
     """
-    query = select(Book)
+    filters = []
     if q:
-        query = query.where(Book.title.icontains(q, autoescape=True))
+        filters.append(
+            or_(Book.title.icontains(q, autoescape=True), Book.author.icontains(q, autoescape=True))
+        )
     if restricted is not None:
-        query = query.where(Book.restricted == restricted)
-    # TODO: min_price / max_price filters
+        filters.append(Book.restricted == restricted)
+    if min_price is not None:
+        filters.append(Book.price_cents >= min_price)
+    if max_price is not None:
+        filters.append(Book.price_cents <= max_price)
 
-    # TODO: apply ``sort``
-    books = db.scalars(query.order_by(Book.id.asc()).limit(limit).offset(offset)).all()
-    total = len(books)
+    # Counted separately so ``total`` reflects the filters, not the current page.
+    total = db.scalar(select(func.count()).select_from(Book).where(*filters))
+    order_by = [SORT_ORDERS[sort]] if sort else []
+    order_by.append(Book.id.asc())
+    books = db.scalars(
+        select(Book).where(*filters).order_by(*order_by).limit(limit).offset(offset)
+    ).all()
 
     return BookPage(items=books, total=total, limit=limit, offset=offset)
